@@ -3,6 +3,8 @@ from django.http import Http404
 from rest_framework import status, viewsets
 from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
+from rest_framework.filters import SearchFilter, OrderingFilter
+from django_filters.rest_framework import DjangoFilterBackend
 
 from .models import StatusChoices, Ticket
 from .serializers import TicketSerializer
@@ -12,6 +14,27 @@ class TicketViewSet(viewsets.ModelViewSet):
     queryset = Ticket.objects.all()
     serializer_class = TicketSerializer
     permission_classes = [AllowAny]  # fully open for POC
+
+    filter_backends = [DjangoFilterBackend, SearchFilter, OrderingFilter]
+
+    # simple exact filters + useful lookups:
+    #   ?id=1 | ?id__in=1,2,3
+    #   ?title__icontains=outage
+    #   ?created_at__gte=2025-09-20T00:00:00Z
+    #   ?resolution_status=open  |  ?resolution_status__in=open,closed
+    filterset_fields = {
+        "id": ["exact", "in"],
+        "title": ["icontains"],
+        "created": ["gte", "lte"],
+        "resolution_status": [
+            "exact",
+            "in",
+        ],
+    }
+
+    search_fields = ["title", "description"]  # fuzzy search across text
+    #  e.g. GET /api/tickets/?search=email
+    ordering_fields = ["created", "updated", "title"]
 
     class InvalidStatusError(ValidationError):
         status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
