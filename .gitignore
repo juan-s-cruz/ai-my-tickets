@@ -183,3 +183,4 @@ cython_debug/
 
 # Additional exclusions
 *.pdf
+Makefile
