@@ -26,6 +26,16 @@ class TicketViewSet(viewsets.ModelViewSet):
             }
             super().__init__(detail=detail)
 
+    class InvalidFieldsError(ValidationError):
+        status_code = status.HTTP_400_BAD_REQUEST
+        default_code = "invalid_fields"
+
+        def __init__(self, fields: set[str]):
+            detail = {
+                field: ["Unknown field sent in request body."] for field in fields
+            }
+            super().__init__(detail=detail)
+
     def get_object(self):
         try:
             return super().get_object()
@@ -35,6 +45,13 @@ class TicketViewSet(viewsets.ModelViewSet):
                 detail=f"Ticket with id '{lookup_value}' was not found."
             ) from exc
 
+    def _validate_fields(self, request):
+        allowed_fields = set(self.serializer_class.Meta.fields)
+        provided_fields = set(request.data.keys())
+        invalid_fields = provided_fields - allowed_fields
+        if invalid_fields:
+            raise self.InvalidFieldsError(invalid_fields)
+
     def _validate_status(self, request):
         if "resolution_status" in request.data:
             status_value = request.data["resolution_status"]
@@ -42,9 +59,11 @@ class TicketViewSet(viewsets.ModelViewSet):
                 raise self.InvalidStatusError(status_value)
 
     def update(self, request, *args, **kwargs):
+        self._validate_fields(request)
         self._validate_status(request)
         return super().update(request, *args, **kwargs)
 
     def partial_update(self, request, *args, **kwargs):
+        self._validate_fields(request)
         self._validate_status(request)
         return super().partial_update(request, *args, **kwargs)
