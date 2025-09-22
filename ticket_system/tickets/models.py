@@ -22,4 +22,4 @@ class Ticket(models.Model):
         ordering = ("-created",)
 
     def __str__(self) -> str:
-        return f"{self.title} ({self.resolution})"
+        return f"{self.title} ({self.resolution_status})"
