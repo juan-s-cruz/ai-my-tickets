@@ -53,6 +53,7 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "ticketing_site.middleware.SimulatedNetworkConditionsMiddleware",
 ]
 
 ROOT_URLCONF = "ticketing_site.urls"
