@@ -10,6 +10,8 @@ import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
+from src.prompt_config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
+
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -28,12 +30,20 @@ def build_chain() -> Runnable:
     Returns:
         Runnable: Compiled LangGraph workflow for invoking the chat model.
     """
-    system = (
-        "You are a helpful support copilot. Be concise and factual. "
-        "When you don't know, say so. Keep answers suitable for a technical reader."
-    )
+    prompt_config: Mapping[str, str] | None = PROMPT_CONFIG.get(DEFAULT_PROMPT_SET)
+    if not prompt_config:
+        raise RuntimeError(
+            f"Prompt configuration '{DEFAULT_PROMPT_SET}' is not defined"
+        )
+
+    system_prompt = prompt_config.get("system")
+    if not system_prompt:
+        raise RuntimeError(
+            f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
+        )
+
     prompt = ChatPromptTemplate.from_messages(
-        [("system", system), ("human", "{input}")]
+        [("system", system_prompt), ("human", "{input}")]
     )
 
     deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
