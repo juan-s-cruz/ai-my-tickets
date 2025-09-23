@@ -18,4 +18,4 @@ COPY . .
 EXPOSE 8100
 
 # ---------- Local dev ----------
-CMD ["uvicorn", "main:app", "--reload", "--host", "0.0.0.0", "--port", "8100"]
+CMD ["python", "main.py"]
