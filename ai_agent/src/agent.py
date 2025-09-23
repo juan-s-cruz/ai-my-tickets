@@ -8,16 +8,24 @@ import json
 import os
 import logging
 from collections.abc import AsyncIterator, Mapping
-from typing import Any
+from typing import Any, Literal
 
 from src.prompt_config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
 
 from langchain.prompts import ChatPromptTemplate
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables.base import Runnable
 from langchain_openai import AzureChatOpenAI
-from langgraph.graph import StateGraph, MessagesState, END
+from langgraph.graph import StateGraph, MessagesState, START, END
+from langchain_core.tools import tool
+from langgraph.prebuilt import ToolNode, tools_condition
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +33,67 @@ RETRY_HINT: bytes = b"retry: 5000\n\n"
 
 # Cache the graph after first use with this global variable
 _GRAPH: Runnable | None = None
+PROMPTS: Mapping[str, str] = PROMPT_CONFIG.get(DEFAULT_PROMPT_SET, {})
+if not PROMPTS:
+    raise RuntimeError(f"Prompt configuration '{DEFAULT_PROMPT_SET}' is not defined")
+
+if "system" not in PROMPTS:
+    raise RuntimeError(
+        f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
+    )
+
+
+def simple_agent(system_prompt: str) -> Runnable:
+    prompt = PROMPT_CONFIG.get(system_prompt).get("system")
+    if not prompt:
+        raise RuntimeError("Unable to resolve system prompt for simple agent")
+
+    deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_MINI")
+    if not deployment:
+        raise RuntimeError("AZURE_OPENAI_CHAT_DEPLOYMENT_MINI is not set")
+
+    llm = AzureChatOpenAI(
+        azure_deployment=deployment,
+        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
+        streaming=True,
+        temperature=0.0,
+    )
+
+    async def node(state: MessagesState) -> MessagesState:
+        msgs = [SystemMessage(content=prompt), *state["messages"]]
+        ai = await llm.ainvoke(msgs)
+        return {"messages": ai}
+
+    g = StateGraph(MessagesState)
+    g.add_node("model", node)
+    g.add_edge(START, "model")
+    g.add_edge("model", END)
+    return g.compile()
+
+
+@tool("route")
+def route(
+    destination: Literal["endpoint_1_assistant", "endpoint_2_assistant"],
+    reason: str = "",
+) -> str:
+    """
+    Hand off to a specialized agent. Set `destination` to one of:
+        "endpoint_1_assistant"
+    """
+    return destination
+
+
+def after_tools(state: MessagesState) -> str:
+    """
+    If the last ToolMessage was `route`, jump to that agent.
+    Otherwise, go back to the assistant to continue the loop.
+    """
+    last = state["messages"][-1]
+    if isinstance(last, ToolMessage) and getattr(last, "name", "") == "route":
+        dest = str(last.content).strip().lower()
+        if dest == "endpoint_1_assistant":
+            return "endpoint_1_assist"
+    return "endpoint_1_assist"
 
 
 def build_chain() -> Runnable:
@@ -33,33 +102,22 @@ def build_chain() -> Runnable:
     Returns:
         Runnable: Compiled LangGraph workflow for invoking the chat model.
     """
-    prompt_config: Mapping[str, str] | None = PROMPT_CONFIG.get(DEFAULT_PROMPT_SET)
-    if not prompt_config:
-        raise RuntimeError(
-            f"Prompt configuration '{DEFAULT_PROMPT_SET}' is not defined"
-        )
-
-    system_prompt = prompt_config.get("system")
-    if not system_prompt:
-        raise RuntimeError(
-            f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
-        )
-
     prompt = ChatPromptTemplate.from_messages(
-        [("system", system_prompt), ("human", "{input}")]
+        [("system", PROMPTS["system"]), ("human", "{input}")]
     )
 
     deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
     if not deployment:
         raise RuntimeError("AZURE_OPENAI_CHAT_DEPLOYMENT is not set")
 
+    routing_tools = [route]
     llm = AzureChatOpenAI(
         azure_deployment=deployment,
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
         streaming=True,
         temperature=0.0,
-    )
-    chain: Runnable = prompt | llm | StrOutputParser()
+    ).bind_tools(routing_tools)
+    chain: Runnable = prompt | llm
 
     graph = StateGraph(MessagesState)
 
@@ -70,16 +128,50 @@ def build_chain() -> Runnable:
 
         last_message = messages[-1]
         if not isinstance(last_message, HumanMessage):
-            raise TypeError("Expected last message to be a HumanMessage")
+            raise TypeError(
+                "Expected last message to be a HumanMessage but received, %s",
+                type(last_message),
+            )
 
         response = await chain.ainvoke({"input": last_message.content})
-        return {"messages": [AIMessage(content=response)]}
+        if not isinstance(response, BaseMessage):
+            raise TypeError("LLM must return a message")
+        return {"messages": response}
 
-    graph.add_node("chat_model", run_chat_model)
-    graph.set_entry_point("chat_model")
-    graph.add_edge("chat_model", END)
+    tool_node = ToolNode(routing_tools)
 
-    return graph.compile()
+    endpoint_1_agent = simple_agent("endpoint_1_config")
+
+    graph.add_node("ticket_assistant", run_chat_model)
+    graph.add_node("tools", tool_node)
+    graph.add_node("endpoint_1_node", endpoint_1_agent)
+
+    # I put the graph together
+    graph.set_entry_point("ticket_assistant")
+
+    graph.add_conditional_edges(
+        "ticket_assistant",
+        tools_condition,
+        {"tools": "tools", "__end__": END},
+    )
+
+    graph.add_conditional_edges(
+        "tools",
+        after_tools,
+        {
+            # "assistant": "ticket_assistant",
+            "endpoint_1_assist": "endpoint_1_node",
+            # "endpoint_1_assist": "endpoint_2_node",
+        },
+    )
+
+    graph.add_edge("endpoint_1_node", END)
+    compiled_graph = graph.compile()
+    with open("graph_ascii.txt", "w") as f:
+        f.write(compiled_graph.get_graph().draw_ascii())
+        logging.info("Saved graph diagram.")
+
+    return compiled_graph
 
 
 def get_graph() -> Runnable:
@@ -119,7 +211,7 @@ async def stream_chat(user_msg: str) -> AsyncIterator[bytes]:
     Yields:
         bytes: Encoded SSE frames containing retry hints, tokens, or status markers.
     """
-    graph: Runnable = get_graph()
+    graph = get_graph()  # compiled LangGraph Runnable
 
     yield RETRY_HINT
 
