@@ -1,6 +1,8 @@
 # ---- base image ----
 FROM python:3.12-slim
 
+ENV TZ=Europe/Copenhagen
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
