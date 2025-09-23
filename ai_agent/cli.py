@@ -46,6 +46,12 @@ def stream_chat(base_url: str, message: str):
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
+        stream=sys.stdout,
+    )
     if len(sys.argv) < 2:
         print(
             'Usage: python cli.py "your message" [http://127.0.0.1:8100]',
