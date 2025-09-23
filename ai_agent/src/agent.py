@@ -2,25 +2,31 @@
 
 from __future__ import annotations
 
+
 import asyncio
 import json
 import os
+import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from langchain.prompts import ChatPromptTemplate
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables.base import Runnable
 from langchain_openai import AzureChatOpenAI
+from langgraph.graph import StateGraph, MessagesState, END
+
+logger = logging.getLogger(__name__)
 
 RETRY_HINT: bytes = b"retry: 5000\n\n"
 
 
 def build_chain() -> Runnable:
-    """Build the LangChain pipeline that powers the support agent.
+    """Build the LangGraph workflow that powers the support agent.
 
     Returns:
-        Runnable: Runnable chain that streams LLM responses as strings.
+        Runnable: Compiled LangGraph workflow for invoking the chat model.
     """
     system = (
         "You are a helpful support copilot. Be concise and factual. "
@@ -41,7 +47,26 @@ def build_chain() -> Runnable:
         temperature=0.0,
     )
     chain: Runnable = prompt | llm | StrOutputParser()
-    return chain
+
+    graph = StateGraph(MessagesState)
+
+    async def run_chat_model(state: MessagesState) -> MessagesState:
+        messages: list[BaseMessage] = state.get("messages", [])
+        if not messages:
+            raise ValueError("Graph state is missing 'messages'")
+
+        last_message = messages[-1]
+        if not isinstance(last_message, HumanMessage):
+            raise TypeError("Expected last message to be a HumanMessage")
+
+        response = await chain.ainvoke({"input": last_message.content})
+        return {"messages": [AIMessage(content=response)]}
+
+    graph.add_node("chat_model", run_chat_model)
+    graph.set_entry_point("chat_model")
+    graph.add_edge("chat_model", END)
+
+    return graph.compile()
 
 
 def sse_event(event: str | None, data: Mapping[str, Any] | str) -> bytes:
@@ -73,14 +98,22 @@ async def stream_chat(user_msg: str) -> AsyncIterator[bytes]:
     Yields:
         bytes: Encoded SSE frames containing retry hints, tokens, or status markers.
     """
-    chain: Runnable = build_chain()
+    graph: Runnable = build_chain()
 
     yield RETRY_HINT
 
     try:
-        async for chunk in chain.astream({"input": user_msg}):
-            yield sse_event("token", {"delta": chunk})
-            await asyncio.sleep(0)
+        result: Mapping[str, Any] = await graph.ainvoke(
+            {"messages": [HumanMessage(content=user_msg)]}
+        )
+        output = ""
+        for msg in reversed(result.get("messages", [])):
+            if isinstance(msg, AIMessage):
+                output = msg.content
+                break
+        if output:
+            yield sse_event("token", {"delta": output})
+        await asyncio.sleep(0)
         yield sse_event("end", {"ok": True})
     except Exception as exc:  # pragma: no cover - runtime safeguard
         yield sse_event("error", {"message": str(exc)})
