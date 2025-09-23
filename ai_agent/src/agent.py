@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 RETRY_HINT: bytes = b"retry: 5000\n\n"
 
+# Cache the graph after first use with this global variable
+_GRAPH: Runnable | None = None
+
 
 def build_chain() -> Runnable:
     """Build the LangGraph workflow that powers the support agent.
@@ -79,6 +82,14 @@ def build_chain() -> Runnable:
     return graph.compile()
 
 
+def get_graph() -> Runnable:
+    """Return a cached instance of the compiled LangGraph workflow."""
+    global _GRAPH
+    if _GRAPH is None:
+        _GRAPH = build_chain()
+    return _GRAPH
+
+
 def sse_event(event: str | None, data: Mapping[str, Any] | str) -> bytes:
     """Format a server-sent event payload.
 
@@ -108,7 +119,7 @@ async def stream_chat(user_msg: str) -> AsyncIterator[bytes]:
     Yields:
         bytes: Encoded SSE frames containing retry hints, tokens, or status markers.
     """
-    graph: Runnable = build_chain()
+    graph: Runnable = get_graph()
 
     yield RETRY_HINT
 
