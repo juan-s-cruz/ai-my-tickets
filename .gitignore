@@ -182,5 +182,6 @@ cython_debug/
 .pypirc
 
 # Additional exclusions
+*.txt
 *.pdf
 Makefile
