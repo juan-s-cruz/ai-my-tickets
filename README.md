@@ -96,4 +96,65 @@ Handle missing resources and validation errors:
 If you create a Django superuser, you can manage tickets at `http://localhost:8000/admin/` while the server is running.
 
 ## 2. AI Agent
-The AI agent (served from `./ai_agent`) connects to the Ticketing API to demonstrate automated ticket triage. Documentation for the agent is forthcoming.
+
+### Overview
+The AI agent is a FastAPI service that wraps a LangGraph/LangChain workflow backed by Azure OpenAI. It listens for HTTP requests, calls the ticketing tools it needs (list, filter, or create tickets), and streams the model's responses back to clients using Server-Sent Events (SSE).
+
+### Environment Variables
+Create `ai_agent/.env` (Docker Compose loads it automatically) and provide the following keys before starting the container or local server:
+
+```
+AZURE_OPENAI_ENDPOINT=https://<your-azure-openai-endpoint>/
+AZURE_OPENAI_API_KEY=<key-with-access-to-the-deployments>
+AZURE_OPENAI_API_VERSION=<your-api-version>
+AZURE_OPENAI_CHAT_DEPLOYMENT=gpt-4o
+AZURE_OPENAI_CHAT_DEPLOYMENT_MINI=gpt-4o-mini
+AGENT_PORT=8100
+```
+
+The two deployment names can point to any chat-capable models you have provisioned (one main, one lighter-weight).
+
+### Running the Agent
+
+#### Option A – Docker Compose
+```bash
+# From the repo root
+docker compose up --build ai_agent
+```
+The service boots once the ticket system container is healthy and serves SSE responses at `http://localhost:8100/chat`. Stop the service with `Ctrl+C` or `docker compose down`.
+
+#### Option B – Local Python environment
+```bash
+cd ai_agent
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python main.py
+```
+The server starts on `0.0.0.0:$AGENT_PORT` and reloads on code changes.
+
+### Request Flow
+- Call `GET /chat?message=<text>` to send a user prompt.
+- The handler relays the message through the routing agent, which may call the ticket tools or sub-agents as needed.
+- Responses stream back as SSE frames (`event: token`, `event: end`, or `event: error`).
+
+### Example Client Call
+```bash
+curl -N "http://localhost:8100/chat?message=Create%20a%20ticket%20about%20email%20failures"
+```
+`curl -N` keeps the connection open so you can watch the streamed tokens arrive in real time. The agent will create a ticket via the API and summarize the outcome.
+
+### CLI Client
+`ai_agent/cli.py` streams SSE responses from the agent and prints them as they arrive. Run it from the repo root after installing the agent dependencies (via Docker Compose or a local virtualenv).
+
+```bash
+python ai_agent/cli.py "List all open tickets"
+```
+
+The optional second argument overrides the base URL (defaults to `http://127.0.0.1:8100`). For example, to target Docker Compose on localhost:
+
+```bash
+python ai_agent/cli.py "Create a ticket for the VPN outage" http://localhost:8100
+```
+
+Use `Ctrl+C` to stop streaming early; the script closes automatically when it receives the agent's `end` event.
