@@ -50,9 +50,11 @@ def after_tools(state: MessagesState) -> str:
     last = state["messages"][-1]
     if isinstance(last, ToolMessage) and getattr(last, "name", "") == "route":
         dest = str(last.content).strip().lower()
-        if dest == "endpoint_1_assistant":
-            return "endpoint_1_assist"
-    return "endpoint_1_assist"
+        if dest == "get_endpoint_assistant":
+            return dest
+        if dest == "create_endpoint_assistant":
+            return dest
+    return "end"
 
 
 def build_chain() -> Runnable:
@@ -86,11 +88,6 @@ def build_chain() -> Runnable:
             raise ValueError("Graph state is missing 'messages'")
 
         last_message = messages[-1]
-        if not isinstance(last_message, HumanMessage):
-            raise TypeError(
-                "Expected last message to be a HumanMessage but received, %s",
-                type(last_message),
-            )
 
         response = await chain.ainvoke({"input": last_message.content})
         if not isinstance(response, BaseMessage):
@@ -99,11 +96,13 @@ def build_chain() -> Runnable:
 
     tool_node = ToolNode(routing_tools)
 
-    endpoint_1_agent = sub_agent("endpoint_1_config")
+    get_endpoint_agent = sub_agent("get_endpoint_config")
+    create_endpoint_agent = sub_agent("create_endpoint_config")
 
     graph.add_node("ticket_assistant", run_chat_model)
     graph.add_node("tools", tool_node)
-    graph.add_node("endpoint_1_node", endpoint_1_agent)
+    graph.add_node("get_endpoint_node", get_endpoint_agent)
+    graph.add_node("create_endpoint_node", create_endpoint_agent)
 
     # I put the graph together
     graph.add_edge(START, "ticket_assistant")
@@ -118,13 +117,14 @@ def build_chain() -> Runnable:
         "tools",
         after_tools,
         {
-            # "assistant": "ticket_assistant",
-            "endpoint_1_assist": "endpoint_1_node",
-            # "endpoint_1_assist": "endpoint_2_node",
+            "get_endpoint_assistant": "get_endpoint_node",
+            "create_endpoint_assistant": "create_endpoint_node",
         },
     )
 
-    graph.add_edge("endpoint_1_node", END)
+    # graph.add_edge("get_endpoint_node", "ticket_assistant")
+    graph.add_edge("get_endpoint_node", END)
+    graph.add_edge("create_endpoint_node", END)
     compiled_graph = graph.compile()
     with open("graph_ascii.txt", "w") as f:
         f.write(compiled_graph.get_graph().draw_ascii())
@@ -179,6 +179,8 @@ async def stream_chat(user_msg: str) -> AsyncIterator[bytes]:
             {"messages": [HumanMessage(content=user_msg)]}
         )
         output = ""
+        for msg in result.get("messages", []):
+            print(f"{msg.type.upper()}: {msg.content}")
         for msg in reversed(result.get("messages", [])):
             if isinstance(msg, AIMessage):
                 output = msg.content

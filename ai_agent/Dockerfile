@@ -3,11 +3,17 @@ FROM python:3.12-slim
 
 ENV TZ=Europe/Copenhagen
 
+# Install system packages
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 # Create app directory
 WORKDIR /app
+
 
 # Install Python deps first to leverage Docker layer caching
 COPY requirements.txt .

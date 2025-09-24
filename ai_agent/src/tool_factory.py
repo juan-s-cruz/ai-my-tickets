@@ -2,20 +2,296 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
-from langchain_core.tools import BaseTool, tool
+import json
+import logging
+from typing import Literal, Optional, Dict, Any, List
+from src.config import MAX_ATTEMPTS, DEFAULT_TIMEOUT_S, BASE_URL
+import httpx
+from pydantic import BaseModel, Field, field_validator
+from tenacity import (
+    retry,
+    wait_exponential,
+    stop_after_attempt,
+    retry_if_exception_type,
+    retry_if_result,
+)
+from langchain_core.tools import BaseTool, tool, StructuredTool
 
 __all__ = ["get_route_tools", "get_tool", "route"]
 
+logger = logging.getLogger(__name__)
 
+
+# ============================== Models ========================================
+class FetchInput(BaseModel):
+    """Inputs accepted by the GET tool."""
+
+    ticket_id: str = Field(
+        ..., description="Resource identifier appended to the endpoint path."
+    )
+    # optional query params
+    params: Optional[Dict[str, Any]] = Field(
+        default_factory=dict, description="Query parameters for the GET."
+    )
+    # optional headers
+    headers: Optional[Dict[str, str]] = Field(
+        default_factory=dict, description="Additional HTTP headers."
+    )
+
+
+class CreateTicketInput(BaseModel):
+    title: str = Field(
+        ..., min_length=3, max_length=200, description="Short human-readable subject"
+    )
+    description: str = Field(
+        ...,
+        min_length=1,
+        max_length=20_000,
+        description="Detailed issue text (markdown allowed)",
+    )
+
+
+Resolution = Literal["OPEN", "RESOLVED", "CLOSED"]
+
+
+class TicketsFilterInput(BaseModel):
+    """Filter Tickets using DRF filters."""
+
+    search: Optional[str] = Field(
+        default=None, description="Full-text search over searchable fields."
+    )
+    id: Optional[List[int]] = Field(
+        default=None, description="Exact id(s). If many, will use __in."
+    )
+    resolution_status: Optional[List[Resolution]] = Field(
+        default=None, description="One or more statuses; will use __in when multiple."
+    )
+    page: Optional[int] = Field(default=1, ge=1)
+    page_size: Optional[int] = Field(
+        default=None, ge=1, le=200, description="If your DRF pagination supports it."
+    )
+    fetch_all: bool = Field(
+        default=False, description="Follow DRF pagination to fetch all pages."
+    )
+    timeout: float = Field(default=10.0, gt=0, description="HTTP timeout in seconds.")
+
+    @field_validator("resolution_status")
+    def dedup_status(cls, v):
+        return sorted(set(v)) if v else v
+
+
+# ======================= Helper functions =====================================
+def _should_retry_on_response(resp: httpx.Response) -> bool:
+    """Return True if this response should be retried."""
+    return resp.status_code == 429 or 500 <= resp.status_code < 600
+
+
+def _retry_decorator():
+    return retry(
+        # Retry on network errors…
+        retry=(
+            retry_if_exception_type(httpx.RequestError)
+            # …or on HTTP responses that indicate transient failure.
+            | retry_if_result(
+                lambda r: isinstance(r, httpx.Response) and _should_retry_on_response(r)
+            )
+        ),
+        wait=wait_exponential(multiplier=1.2, min=0, max=10.0),
+        stop=stop_after_attempt(MAX_ATTEMPTS),
+        reraise=True,
+    )
+
+
+def _safe_json(r: httpx.Response) -> Any:
+    try:
+        return r.json()
+    except Exception:
+        return {"raw": r.text[:2000]}
+
+
+@_retry_decorator()
+async def _create_ticket(title: str, description: str) -> Dict[str, Any]:
+    payload = CreateTicketInput(title=title, description=description)
+    body = {"title": payload.title.strip(), "description": payload.description}
+    headers = {}
+    headers.setdefault("Accept", "application/json")
+    logger.info(headers)
+
+    async with httpx.AsyncClient(
+        timeout=DEFAULT_TIMEOUT_S, follow_redirects=True
+    ) as client:
+        r = await client.post(f"{BASE_URL}", json=body, headers=headers)
+        try:
+            r.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            # If server returns 409 for duplicate idempotency, treat as success and return body
+            if r.status_code == 409:
+                return _safe_json(r)
+            # Non-retryable 4xx will bubble up; tenacity will not retry them
+            raise
+        return _safe_json(r)  # expected to be the created ticket as a dict
+
+
+@_retry_decorator()
+async def _get_json(
+    client: httpx.AsyncClient, url: str, params: Dict[str, Any], timeout: float
+) -> Dict[str, Any]:
+    resp = await client.get(url, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _build_params(inp: TicketsFilterInput) -> Dict[str, Any]:
+    params: Dict[str, Any] = {}
+    if inp.search:
+        params["search"] = inp.search
+    if inp.id:
+        if len(inp.id) == 1:
+            params["id"] = str(inp.id[0])
+        else:
+            params["id__in"] = ",".join(str(x) for x in inp.id)
+    if inp.resolution_status:
+        if len(inp.resolution_status) == 1:
+            params["resolution_status"] = inp.resolution_status[0]
+        else:
+            params["resolution_status__in"] = ",".join(inp.resolution_status)
+    if inp.page is not None:
+        params["page"] = inp.page
+    if inp.page_size is not None:
+        params["page_size"] = inp.page_size
+    return params
+
+
+@_retry_decorator()
+async def _list_tickets_impl(
+    *,
+    search: str = None,
+    id: List[int] = None,
+    resolution_status: List[Resolution] = None,
+    page: int = 1,
+    page_size: int = None,
+    fetch_all: bool = False,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    inp = TicketsFilterInput(
+        search=search,
+        id=id,
+        resolution_status=resolution_status,
+        page=page,
+        page_size=page_size,
+        fetch_all=fetch_all,
+        timeout=timeout,
+    )
+    params = _build_params(inp)
+    async with httpx.AsyncClient(
+        base_url=BASE_URL, headers={"Accept": "application/json"}
+    ) as client:
+        data = await _get_json(client, BASE_URL, params, inp.timeout)
+
+        # DRF pagination shape: {"count": int, "next": url|null, "previous": url|null, "results": [...]}
+        if (
+            inp.fetch_all
+            and isinstance(data, dict)
+            and "results" in data
+            and data.get("next")
+        ):
+            all_results = list(data["results"])
+            next_url = data["next"]
+            # Follow next links; keep same timeout + retry policy
+            while next_url:
+                page = await _get_json(client, next_url, params={}, timeout=inp.timeout)
+                all_results.extend(page.get("results", []))
+                next_url = page.get("next")
+            # Return in DRF-like shape for consistency
+            return {
+                "count": len(all_results),
+                "next": None,
+                "previous": None,
+                "results": all_results,
+            }
+        return data
+
+
+# ========================== Tool definitions ==================================
 @tool("route")
 def route(
-    destination: Literal["endpoint_1_assistant", "endpoint_2_assistant"],
+    destination: Literal["get_endpoint_assistant", "create_endpoint_assistant"],
     reason: str = "",
 ) -> str:
     """Hand off to a specialized agent by returning the destination name."""
     return destination
+
+
+@tool("get_tickets", args_schema=FetchInput)
+@_retry_decorator()
+async def get_tickets(
+    ticket_id: str, params: Dict[str, Any] = None, headers: Dict[str, str] = None
+) -> Dict[str, Any]:
+    """
+    Perform a GET to the ticket system to get current tickets in the system.
+    Ths tool will retr on 5xx/429/network errors and return parsed JSON plus status/meta.
+
+    Args:
+        ticket_id: argument is used to identify the tickets, leave empty
+    """
+    params = params or {}
+    headers = headers or {}
+    # you can set a default Accept header safely
+    headers.setdefault("Accept", "application/json")
+
+    url = f"{str(BASE_URL).rstrip('/')}/{ticket_id}"
+    async with httpx.AsyncClient(
+        timeout=DEFAULT_TIMEOUT_S, follow_redirects=True
+    ) as client:
+        resp = await client.get(url, params=params, headers=headers)
+
+    # allows the retry_if_result condition above to trigger retries on 5xx/429.
+    if _should_retry_on_response(resp):
+        return resp
+
+    # Raise for non-OK statuses that we don't retry (e.g., 4xx not 429).
+    resp.raise_for_status()
+
+    # Parse JSON safely; if the API returns non-JSON, this will raise.
+    try:
+        data = resp.json()
+    except json.JSONDecodeError as e:
+        # Provide a helpful error payload to the agent
+        raise ValueError(
+            f"Endpoint returned non-JSON payload (status {resp.status_code})."
+        ) from e
+
+    # Return a clean, tool-friendly dict
+    return {
+        "ok": True,
+        "status": resp.status_code,
+        "url": str(resp.request.url),
+        "data": data,
+    }
+
+
+create_ticket_tool = StructuredTool.from_function(
+    name="create_ticket",
+    description=(
+        "Create a new support ticket. "
+        "Use this tool when the user wants to open/submit/log an issue."
+    ),
+    args_schema=CreateTicketInput,
+    coroutine=_create_ticket,  # for async version
+    return_direct=False,
+)
+
+get_filtered_tickets_tool: StructuredTool = StructuredTool.from_function(
+    name="get_filtered_tickets",
+    description=(
+        "List tickets using DRF filters. Supports 'search', 'id' (single or list), "
+        "'resolution_status' (single or list), pagination (page/page_size), and fetch_all."
+    ),
+    args_schema=TicketsFilterInput,
+    coroutine=_list_tickets_impl,
+)
+
+# ======================= Get tool functions ===================================
 
 
 def get_route_tools() -> list:
@@ -26,7 +302,7 @@ def get_route_tools() -> list:
 def get_sub_agent_tools() -> list:
     """Return the collection of LangChain tools used by the support agent."""
     # TODO: Add tools for sub agents
-    return []
+    return [get_tickets, create_ticket_tool, get_filtered_tickets_tool]
 
 
 def get_tool(tool_name: str) -> BaseTool:
