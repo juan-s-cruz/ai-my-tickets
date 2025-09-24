@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  ticket_system:
+    build:
+      context: ./ticket_system
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ticket_system:/app
+    networks:
+      - app-network
+
+  ai_agent:
+    build:
+      context: ./ai_agent
+    depends_on:
+      - ticket_system
+    ports:
+      - "8100:8100"
+    env_file:
+      - ./ai_agent/.env
+    environment:
+      - TICKET_SYSTEM_URL=http://ticket_system:8000
+    volumes:
+      - ./ai_agent:/app
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

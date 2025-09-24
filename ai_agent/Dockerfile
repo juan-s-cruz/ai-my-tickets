@@ -1,0 +1,23 @@
+# ---- base image ----
+FROM python:3.12-slim
+
+ENV TZ=Europe/Copenhagen
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+# Create app directory
+WORKDIR /app
+
+# Install Python deps first to leverage Docker layer caching
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy project
+COPY . .
+
+# Expose port for runserver
+EXPOSE 8100
+
+# ---------- Local dev ----------
+CMD ["python", "main.py"]
