@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from src.prompt_config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
+from src.sub_agents import simple_agent
 from src.tool_factory import get_route_tools
 
 from langchain.prompts import ChatPromptTemplate
@@ -18,10 +19,8 @@ from langchain_core.messages import (
     AIMessage,
     BaseMessage,
     HumanMessage,
-    SystemMessage,
     ToolMessage,
 )
-from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables.base import Runnable
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import StateGraph, MessagesState, START, END
@@ -41,34 +40,6 @@ if "system" not in PROMPTS:
     raise RuntimeError(
         f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
     )
-
-
-def simple_agent(system_prompt: str) -> Runnable:
-    prompt = PROMPT_CONFIG.get(system_prompt).get("system")
-    if not prompt:
-        raise RuntimeError("Unable to resolve system prompt for simple agent")
-
-    deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_MINI")
-    if not deployment:
-        raise RuntimeError("AZURE_OPENAI_CHAT_DEPLOYMENT_MINI is not set")
-
-    llm = AzureChatOpenAI(
-        azure_deployment=deployment,
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        streaming=True,
-        temperature=0.0,
-    )
-
-    async def node(state: MessagesState) -> MessagesState:
-        msgs = [SystemMessage(content=prompt), *state["messages"]]
-        ai = await llm.ainvoke(msgs)
-        return {"messages": ai}
-
-    g = StateGraph(MessagesState)
-    g.add_node("model", node)
-    g.add_edge(START, "model")
-    g.add_edge("model", END)
-    return g.compile()
 
 
 def after_tools(state: MessagesState) -> str:
@@ -135,7 +106,7 @@ def build_chain() -> Runnable:
     graph.add_node("endpoint_1_node", endpoint_1_agent)
 
     # I put the graph together
-    graph.set_entry_point("ticket_assistant")
+    graph.add_edge(START, "ticket_assistant")
 
     graph.add_conditional_edges(
         "ticket_assistant",
