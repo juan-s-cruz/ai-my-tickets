@@ -11,10 +11,10 @@ from langgraph.graph import MessagesState, StateGraph, END, START
 
 from src.prompt_config import PROMPT_CONFIG
 
-__all__ = ["simple_agent"]
+__all__ = ["sub_agent"]
 
 
-def simple_agent(system_prompt: str) -> Runnable:
+def sub_agent(system_prompt: str) -> Runnable:
     """Return a compiled LangGraph agent configured for a specific system prompt."""
     prompt_config = PROMPT_CONFIG.get(system_prompt, {})
     prompt = prompt_config.get("system")

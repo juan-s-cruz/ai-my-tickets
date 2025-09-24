@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
 from src.prompt_config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
-from src.sub_agents import simple_agent
+from src.sub_agents import sub_agent
 from src.tool_factory import get_route_tools
 
 from langchain.prompts import ChatPromptTemplate
@@ -99,7 +99,7 @@ def build_chain() -> Runnable:
 
     tool_node = ToolNode(routing_tools)
 
-    endpoint_1_agent = simple_agent("endpoint_1_config")
+    endpoint_1_agent = sub_agent("endpoint_1_config")
 
     graph.add_node("ticket_assistant", run_chat_model)
     graph.add_node("tools", tool_node)
