@@ -19,7 +19,13 @@ from langchain_core.tools import BaseTool, tool, StructuredTool
 
 from src.models import RESOLUTION, FetchInput, CreateTicketInput, TicketsFilterInput
 
-__all__ = ["get_route_tools", "get_tool", "route"]
+__all__ = [
+    "get_route_tools",
+    "get_tool",
+    "router",
+    "get_sub_agent_tools",
+    "get_route_tools",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -156,10 +162,23 @@ async def _list_tickets_impl(
         return data
 
 
+@_retry_decorator()
+async def _patch(
+    client: httpx.AsyncClient,
+    url: str,
+    json_payload: Dict[str, Any],
+) -> httpx.Response:
+    return await client.patch(url, json=json_payload)
+
+
 # ========================== Tool definitions ==================================
 @tool("route")
-def route(
-    destination: Literal["get_endpoint_assistant", "create_endpoint_assistant"],
+def router(
+    destination: Literal[
+        "get_endpoint_assistant",
+        "create_endpoint_assistant",
+        "update_endpoint_assistant",
+    ],
     reason: str = "",
 ) -> str:
     """Hand off to a specialized agent by returning the destination name."""
@@ -214,7 +233,7 @@ async def get_tickets(
     }
 
 
-create_ticket_tool = StructuredTool.from_function(
+create_ticket = StructuredTool.from_function(
     name="create_ticket",
     description=(
         "Create a new support ticket. "
@@ -225,7 +244,7 @@ create_ticket_tool = StructuredTool.from_function(
     return_direct=False,
 )
 
-get_filtered_tickets_tool: StructuredTool = StructuredTool.from_function(
+get_filtered_tickets: StructuredTool = StructuredTool.from_function(
     name="get_filtered_tickets",
     description=(
         "List tickets using DRF filters. Supports 'search', 'id' (single or list), "
@@ -235,18 +254,79 @@ get_filtered_tickets_tool: StructuredTool = StructuredTool.from_function(
     coroutine=_list_tickets_impl,
 )
 
+
+@tool("update_ticket", return_direct=False)
+async def update_ticket(
+    ticket_id: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    resolution_status: Optional[str] = None,
+    base_url: str = BASE_URL,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    """
+    PATCH-update an existing ticket.
+
+    Updatable fields: title, description, resolution_status.
+
+    Args:
+        ticket_id: Ticket identifier.
+        title: Optional new title.
+        description: Optional new description.
+        resolution_status: Optional new resolution status.
+        base_url: Ticket system base URL (no trailing slash).
+        timeout_s: HTTP timeout in seconds.
+
+    Returns:
+        Parsed JSON (dict) on success. Raises for non-2xx.
+    """
+    if not (title or description or resolution_status):
+        raise ValueError(
+            "Provide at least one of `title`, `description`, or `resolution_status` for PATCH."
+        )
+
+    payload: Dict[str, Any] = {}
+    if title is not None:
+        payload["title"] = title
+    if description is not None:
+        payload["description"] = description
+    if resolution_status is not None:
+        payload["resolution_status"] = resolution_status
+
+    url = f"{base_url.rstrip('/')}/{ticket_id}/"
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await _patch(client, url, payload)
+
+    if 500 <= resp.status_code < 600:
+        resp.raise_for_status()
+
+    if 400 <= resp.status_code < 500:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise httpx.HTTPStatusError(
+            f"PATCH {url} failed with {resp.status_code}: {detail}",
+            request=resp.request,
+            response=resp,
+        )
+
+    return resp.json()
+
+
 # ======================= Get tool functions ===================================
 
 
 def get_route_tools() -> list:
     """Return the collection of LangChain tools used by the main agent."""
-    return [route]
+    return [router]
 
 
 def get_sub_agent_tools() -> list:
     """Return the collection of LangChain tools used by the support agent."""
     # TODO: Add tools for sub agents
-    return [get_tickets, create_ticket_tool, get_filtered_tickets_tool]
+    return [get_tickets, create_ticket, get_filtered_tickets, update_ticket]
 
 
 def get_tool(tool_name: str) -> BaseTool:

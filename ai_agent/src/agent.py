@@ -50,9 +50,11 @@ def after_tools(state: MessagesState) -> str:
     last = state["messages"][-1]
     if isinstance(last, ToolMessage) and getattr(last, "name", "") == "route":
         dest = str(last.content).strip().lower()
-        if dest == "get_endpoint_assistant":
-            return dest
-        if dest == "create_endpoint_assistant":
+        if dest in [
+            "get_endpoint_assistant",
+            "create_endpoint_assistant",
+            "update_endpoint_assistant",
+        ]:
             return dest
     return "end"
 
@@ -98,11 +100,13 @@ def build_chain() -> Runnable:
 
     get_endpoint_agent = sub_agent("get_endpoint_config")
     create_endpoint_agent = sub_agent("create_endpoint_config")
+    update_endpoint_agent = sub_agent("update_endpoint_config")
 
     graph.add_node("ticket_assistant", run_chat_model)
     graph.add_node("tools", tool_node)
     graph.add_node("get_endpoint_node", get_endpoint_agent)
     graph.add_node("create_endpoint_node", create_endpoint_agent)
+    graph.add_node("update_endpoint_node", update_endpoint_agent)
 
     # I put the graph together
     graph.add_edge(START, "ticket_assistant")
@@ -119,6 +123,7 @@ def build_chain() -> Runnable:
         {
             "get_endpoint_assistant": "get_endpoint_node",
             "create_endpoint_assistant": "create_endpoint_node",
+            "update_endpoint_assistant": "update_endpoint_node",
         },
     )
 
