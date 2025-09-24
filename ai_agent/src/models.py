@@ -59,3 +59,9 @@ class TicketsFilterInput(BaseModel):
     @field_validator("resolution_status")
     def dedup_status(cls, v):
         return sorted(set(v)) if v else v
+
+
+class DeleteTicketInput(BaseModel):
+    """Delete a ticket by its id."""
+
+    ticket_id: str = Field(..., description="The ticket id to delete")

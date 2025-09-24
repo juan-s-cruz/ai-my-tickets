@@ -47,6 +47,7 @@ def after_tools(state: MessagesState) -> str:
             "get_endpoint_assistant",
             "create_endpoint_assistant",
             "update_endpoint_assistant",
+            "delete_endpoint_assistant",
         ]:
             return dest
     return "end"
@@ -65,6 +66,7 @@ def build_chain() -> Runnable:
     get_endpoint_agent = sub_agent("get_endpoint_config")
     create_endpoint_agent = sub_agent("create_endpoint_config")
     update_endpoint_agent = sub_agent("update_endpoint_config")
+    delete_endpoint_agent = sub_agent("delete_endpoint_config")
 
     graph = StateGraph(MessagesState)
     graph.add_node("ticket_assistant", main_agent)
@@ -72,6 +74,7 @@ def build_chain() -> Runnable:
     graph.add_node("get_endpoint_node", get_endpoint_agent)
     graph.add_node("create_endpoint_node", create_endpoint_agent)
     graph.add_node("update_endpoint_node", update_endpoint_agent)
+    graph.add_node("delete_endpoint_node", delete_endpoint_agent)
 
     # I put the graph together
     graph.add_edge(START, "ticket_assistant")
@@ -89,12 +92,15 @@ def build_chain() -> Runnable:
             "get_endpoint_assistant": "get_endpoint_node",
             "create_endpoint_assistant": "create_endpoint_node",
             "update_endpoint_assistant": "update_endpoint_node",
+            "delete_endpoint_assistant": "delete_endpoint_node",
         },
     )
 
     # graph.add_edge("get_endpoint_node", "ticket_assistant")
     graph.add_edge("get_endpoint_node", END)
     graph.add_edge("create_endpoint_node", END)
+    graph.add_edge("update_endpoint_node", END)
+    graph.add_edge("delete_endpoint_node", END)
     compiled_graph = graph.compile()
     with open("graph_ascii.txt", "w") as f:
         f.write(compiled_graph.get_graph().draw_ascii())

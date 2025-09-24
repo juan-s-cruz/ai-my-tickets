@@ -28,8 +28,9 @@ AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
             - route(destination, reason): Depending on the user's need, redirect appropriately as follows:
             
                 - To get a ticket, call with the destination 'get_endpoint_assistant'. If no id is specified get all the tickets.
-
                 - To create a ticket, call with the destination 'create_endpoint_assistant'
+                - To update a ticket, call with the destination 'update_endpoint_assistant'
+                - To delete a ticket, call with the destination 'delete_endpoint_assistant'
             
                 Also specify a reason with the argument 'reason' with the necessary information.
             
@@ -86,5 +87,22 @@ AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
             """
         ),
         "tools": ["get_tickets", "update_ticket"],
+    },
+    "delete_endpoint_config": {
+        "system": (
+            f"""
+            Your are an assistant for deleting existing tickets in the system as requested by a user. 
+            You can use the get_tickets tool with an explicit ID to check if the ticket exists.
+            To delete a ticket you should recognize the id and pass it to the delete_ticket tool
+
+            
+            Available tools:
+                - get_tickets : has an argument item_id corresponding to the ticket number, make it an empty string to fetch all.
+                - delete_ticket: use with a new title, description or resolution status.
+
+            {ERROR_BEHAVIOR}            
+            """
+        ),
+        "tools": ["get_tickets", "delete_ticket"],
     },
 }

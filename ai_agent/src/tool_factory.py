@@ -17,7 +17,13 @@ from tenacity import (
 )
 from langchain_core.tools import BaseTool, tool, StructuredTool
 
-from src.models import RESOLUTION, FetchInput, CreateTicketInput, TicketsFilterInput
+from src.models import (
+    RESOLUTION,
+    FetchInput,
+    CreateTicketInput,
+    TicketsFilterInput,
+    DeleteTicketInput,
+)
 
 __all__ = [
     "get_route_tools",
@@ -178,6 +184,7 @@ def router(
         "get_endpoint_assistant",
         "create_endpoint_assistant",
         "update_endpoint_assistant",
+        "delete_endpoint_assistant",
     ],
     reason: str = "",
 ) -> str:
@@ -256,6 +263,7 @@ get_filtered_tickets: StructuredTool = StructuredTool.from_function(
 
 
 @tool("update_ticket", return_direct=False)
+@_retry_decorator()
 async def update_ticket(
     ticket_id: str,
     title: Optional[str] = None,
@@ -298,8 +306,9 @@ async def update_ticket(
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await _patch(client, url, payload)
 
-    if 500 <= resp.status_code < 600:
-        resp.raise_for_status()
+    # allows the retry_if_result condition above to trigger retries on 5xx/429.
+    if _should_retry_on_response(resp):
+        return resp
 
     if 400 <= resp.status_code < 500:
         try:
@@ -315,6 +324,45 @@ async def update_ticket(
     return resp.json()
 
 
+@tool("delete_ticket", args_schema=DeleteTicketInput)
+@_retry_decorator()
+async def delete_ticket(ticket_id: str) -> Dict[str, Any]:
+    """
+    DELETE /tickets/{ticket_id}
+    Returns a small JSON status object.
+    Retries on network errors/timeouts; does not retry on 4xx.
+    """
+    url = f"{str(BASE_URL).rstrip('/')}/{ticket_id}/"
+    timeout = httpx.Timeout(10.0, connect=5.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.delete(url)
+
+    if resp.status_code == 204:
+        # common REST pattern: 204 No Content on success
+        return {"ok": True, "deleted": True, "ticket_id": ticket_id, "status_code": 204}
+
+    # allows the retry_if_result condition above to trigger retries on 5xx/429.
+    if _should_retry_on_response(resp):
+        return resp
+
+    if 400 <= resp.status_code < 500:
+        # other client errors
+        details = {}
+        try:
+            details = resp.json()
+        except Exception:
+            details = {"text": resp.text[:500]}
+        return {
+            "ok": False,
+            "deleted": False,
+            "ticket_id": ticket_id,
+            "error": "Client error",
+            "status_code": resp.status_code,
+            "details": details,
+        }
+
+
 # ======================= Get tool functions ===================================
 
 
@@ -326,7 +374,13 @@ def get_route_tools() -> list:
 def get_sub_agent_tools() -> list:
     """Return the collection of LangChain tools used by the support agent."""
     # TODO: Add tools for sub agents
-    return [get_tickets, create_ticket, get_filtered_tickets, update_ticket]
+    return [
+        get_tickets,
+        create_ticket,
+        get_filtered_tickets,
+        update_ticket,
+        delete_ticket,
+    ]
 
 
 def get_tool(tool_name: str) -> BaseTool:
