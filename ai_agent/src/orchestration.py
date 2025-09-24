@@ -32,14 +32,24 @@ RETRY_HINT: bytes = b"retry: 5000\n\n"
 
 # Cache the graph after first use with this global variable
 _GRAPH: Runnable | None = None
-PROMPTS: Mapping[str, str] = AGENTS_CONFIG.get(DEFAULT_PROMPT_SET, {})
-if not PROMPTS:
-    raise RuntimeError(f"Prompt configuration '{DEFAULT_PROMPT_SET}' is not defined")
+_PROMPTS: Mapping[str, str] | None = None
 
-if "system" not in PROMPTS:
-    raise RuntimeError(
-        f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
-    )
+
+def _get_prompts() -> Mapping[str, str]:
+    """Load and validate the prompt set when first needed."""
+    global _PROMPTS
+    if _PROMPTS is None:
+        prompts = AGENTS_CONFIG.get(DEFAULT_PROMPT_SET, {})
+        if not prompts:
+            raise RuntimeError(
+                f"Prompt configuration '{DEFAULT_PROMPT_SET}' is not defined"
+            )
+        if "system" not in prompts:
+            raise RuntimeError(
+                f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
+            )
+        _PROMPTS = prompts
+    return _PROMPTS
 
 
 def after_tools(state: MessagesState) -> str:
@@ -65,8 +75,9 @@ def build_chain() -> Runnable:
     Returns:
         Runnable: Compiled LangGraph workflow for invoking the chat model.
     """
+    prompts = _get_prompts()
     prompt = ChatPromptTemplate.from_messages(
-        [("system", PROMPTS["system"]), ("human", "{input}")]
+        [("system", prompts["system"]), ("human", "{input}")]
     )
 
     deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
