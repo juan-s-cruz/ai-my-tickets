@@ -10,7 +10,7 @@ import logging
 from collections.abc import AsyncIterator, Mapping
 from typing import Any
 
-from src.prompt_config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
+from src.config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
 from src.sub_agents import sub_agent
 from src.tool_factory import get_route_tools
 

@@ -9,7 +9,7 @@ from langchain_core.runnables.base import Runnable
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import MessagesState, StateGraph, END, START
 
-from src.prompt_config import PROMPT_CONFIG
+from src.config import PROMPT_CONFIG
 
 __all__ = ["sub_agent"]
 
