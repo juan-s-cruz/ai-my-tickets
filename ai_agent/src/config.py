@@ -13,7 +13,8 @@ DEFAULT_PROMPT_SET: Final[str] = "ticketing_agent"
 
 ERROR_BEHAVIOR = """If encountering errors
             1) Accurately interpret the specific detail message provided by the API in the error response.
-            2) Use this information to provide clear, user-friendly, and actionable feedback to the end-user. For instance, if a ticket ID is not found, the agent should clearly state that. If an invalid status is provided, the agent should inform the user of the valid options.
+            2) Use this information to provide clear, user-friendly, and actionable feedback to the end-user. For instance, if a ticket ID is not found, state that clearly. If an invalid status is provided, the agent should inform the user of the valid options.
+            3) If the service is unavailable, try 3 times more. If it persists report the error and the number of attempts.
             """
 
 AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
@@ -49,11 +50,12 @@ AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
             
             Available tools:
                 get_ticket : has an argument item_id corresponding to the ticket number, make it an empty string to fetch all.
+                get_filtered_tickets: to get a filtered list if the user has specified some condition e.g. description containing emails
 
             {ERROR_BEHAVIOR}
             """
         ),
-        "tools": ["get_tickets"],
+        "tools": ["get_tickets", "get_filtered_tickets"],
     },
     "create_endpoint_config": {
         "system": (
