@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 import uvicorn
 
 from src.logging_config import LOGGING_CONFIG
-from src.agent import stream_chat
+from src.orchestration import stream_chat
 
 logging.basicConfig(
     level=logging.DEBUG,

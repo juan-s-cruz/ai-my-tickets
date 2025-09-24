@@ -14,7 +14,7 @@ DEFAULT_PROMPT_SET: Final[str] = "ticketing_agent"
 ERROR_BEHAVIOR = """If encountering errors
             1) Accurately interpret the specific detail message provided by the API in the error response.
             2) Use this information to provide clear, user-friendly, and actionable feedback to the end-user. For instance, if a ticket ID is not found, state that clearly. If an invalid status is provided, the agent should inform the user of the valid options.
-            3) If the service is unavailable, try 3 times more. If it persists report the error and the number of attempts.
+            3) If the service is unavailable, try one more time. If it persists report the error and the number of attempts.
             """
 
 AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
@@ -28,8 +28,9 @@ AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
             - route(destination, reason): Depending on the user's need, redirect appropriately as follows:
             
                 - To get a ticket, call with the destination 'get_endpoint_assistant'. If no id is specified get all the tickets.
-
                 - To create a ticket, call with the destination 'create_endpoint_assistant'
+                - To update a ticket, call with the destination 'update_endpoint_assistant'
+                - To delete a ticket, call with the destination 'delete_endpoint_assistant'
             
                 Also specify a reason with the argument 'reason' with the necessary information.
             
@@ -49,7 +50,7 @@ AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
             If you cannot do it return a message explaining why. 
             
             Available tools:
-                get_ticket : has an argument item_id corresponding to the ticket number, make it an empty string to fetch all.
+                get_tickets : has an argument item_id corresponding to the ticket number, make it an empty string to fetch all.
                 get_filtered_tickets: to get a filtered list if the user has specified some condition e.g. description containing emails
 
             {ERROR_BEHAVIOR}
@@ -69,5 +70,39 @@ AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
             """
         ),
         "tools": ["create_ticket"],
+    },
+    "update_endpoint_config": {
+        "system": (
+            f"""
+            Your are an assistant for updating existing tickets in the system as requested by a user. 
+            You can use the get_tickets tool with an explicit ID to check if the ticket exists and what are its parameters in the system. 
+            To update a ticket you should recognize the request and identify what are the new parameters among, title, description or resolution_status. 
+
+            
+            Available tools:
+                - get_tickets : has an argument item_id corresponding to the ticket number, make it an empty string to fetch all.
+                - update_ticket: use with a new title, description or resolution status.
+
+            {ERROR_BEHAVIOR}            
+            """
+        ),
+        "tools": ["get_tickets", "update_ticket"],
+    },
+    "delete_endpoint_config": {
+        "system": (
+            f"""
+            Your are an assistant for deleting existing tickets in the system as requested by a user. 
+            You can use the get_tickets tool with an explicit ID to check if the ticket exists.
+            To delete a ticket you should recognize the id and pass it to the delete_ticket tool
+
+            
+            Available tools:
+                - get_tickets : has an argument item_id corresponding to the ticket number, make it an empty string to fetch all.
+                - delete_ticket: use with a new title, description or resolution status.
+
+            {ERROR_BEHAVIOR}            
+            """
+        ),
+        "tools": ["get_tickets", "delete_ticket"],
     },
 }

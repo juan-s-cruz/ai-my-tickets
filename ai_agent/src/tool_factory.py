@@ -7,7 +7,7 @@ import logging
 from typing import Literal, Optional, Dict, Any, List
 from src.config import MAX_ATTEMPTS, DEFAULT_TIMEOUT_S, BASE_URL
 import httpx
-from pydantic import BaseModel, Field, field_validator
+
 from tenacity import (
     retry,
     wait_exponential,
@@ -17,67 +17,23 @@ from tenacity import (
 )
 from langchain_core.tools import BaseTool, tool, StructuredTool
 
-__all__ = ["get_route_tools", "get_tool", "route"]
+from src.models import (
+    RESOLUTION,
+    FetchInput,
+    CreateTicketInput,
+    TicketsFilterInput,
+    DeleteTicketInput,
+)
+
+__all__ = [
+    "get_route_tools",
+    "get_tool",
+    "router",
+    "get_sub_agent_tools",
+    "get_route_tools",
+]
 
 logger = logging.getLogger(__name__)
-
-
-# ============================== Models ========================================
-class FetchInput(BaseModel):
-    """Inputs accepted by the GET tool."""
-
-    ticket_id: str = Field(
-        ..., description="Resource identifier appended to the endpoint path."
-    )
-    # optional query params
-    params: Optional[Dict[str, Any]] = Field(
-        default_factory=dict, description="Query parameters for the GET."
-    )
-    # optional headers
-    headers: Optional[Dict[str, str]] = Field(
-        default_factory=dict, description="Additional HTTP headers."
-    )
-
-
-class CreateTicketInput(BaseModel):
-    title: str = Field(
-        ..., min_length=3, max_length=200, description="Short human-readable subject"
-    )
-    description: str = Field(
-        ...,
-        min_length=1,
-        max_length=20_000,
-        description="Detailed issue text (markdown allowed)",
-    )
-
-
-Resolution = Literal["OPEN", "RESOLVED", "CLOSED"]
-
-
-class TicketsFilterInput(BaseModel):
-    """Filter Tickets using DRF filters."""
-
-    search: Optional[str] = Field(
-        default=None, description="Full-text search over searchable fields."
-    )
-    id: Optional[List[int]] = Field(
-        default=None, description="Exact id(s). If many, will use __in."
-    )
-    resolution_status: Optional[List[Resolution]] = Field(
-        default=None, description="One or more statuses; will use __in when multiple."
-    )
-    page: Optional[int] = Field(default=1, ge=1)
-    page_size: Optional[int] = Field(
-        default=None, ge=1, le=200, description="If your DRF pagination supports it."
-    )
-    fetch_all: bool = Field(
-        default=False, description="Follow DRF pagination to fetch all pages."
-    )
-    timeout: float = Field(default=10.0, gt=0, description="HTTP timeout in seconds.")
-
-    @field_validator("resolution_status")
-    def dedup_status(cls, v):
-        return sorted(set(v)) if v else v
 
 
 # ======================= Helper functions =====================================
@@ -167,7 +123,7 @@ async def _list_tickets_impl(
     *,
     search: str = None,
     id: List[int] = None,
-    resolution_status: List[Resolution] = None,
+    resolution_status: List[RESOLUTION] = None,
     page: int = 1,
     page_size: int = None,
     fetch_all: bool = False,
@@ -212,10 +168,24 @@ async def _list_tickets_impl(
         return data
 
 
+@_retry_decorator()
+async def _patch(
+    client: httpx.AsyncClient,
+    url: str,
+    json_payload: Dict[str, Any],
+) -> httpx.Response:
+    return await client.patch(url, json=json_payload)
+
+
 # ========================== Tool definitions ==================================
 @tool("route")
-def route(
-    destination: Literal["get_endpoint_assistant", "create_endpoint_assistant"],
+def router(
+    destination: Literal[
+        "get_endpoint_assistant",
+        "create_endpoint_assistant",
+        "update_endpoint_assistant",
+        "delete_endpoint_assistant",
+    ],
     reason: str = "",
 ) -> str:
     """Hand off to a specialized agent by returning the destination name."""
@@ -270,7 +240,7 @@ async def get_tickets(
     }
 
 
-create_ticket_tool = StructuredTool.from_function(
+create_ticket = StructuredTool.from_function(
     name="create_ticket",
     description=(
         "Create a new support ticket. "
@@ -281,7 +251,7 @@ create_ticket_tool = StructuredTool.from_function(
     return_direct=False,
 )
 
-get_filtered_tickets_tool: StructuredTool = StructuredTool.from_function(
+get_filtered_tickets: StructuredTool = StructuredTool.from_function(
     name="get_filtered_tickets",
     description=(
         "List tickets using DRF filters. Supports 'search', 'id' (single or list), "
@@ -291,18 +261,126 @@ get_filtered_tickets_tool: StructuredTool = StructuredTool.from_function(
     coroutine=_list_tickets_impl,
 )
 
+
+@tool("update_ticket", return_direct=False)
+@_retry_decorator()
+async def update_ticket(
+    ticket_id: str,
+    title: Optional[str] = None,
+    description: Optional[str] = None,
+    resolution_status: Optional[str] = None,
+    base_url: str = BASE_URL,
+    timeout: float = 10.0,
+) -> Dict[str, Any]:
+    """
+    PATCH-update an existing ticket.
+
+    Updatable fields: title, description, resolution_status.
+
+    Args:
+        ticket_id: Ticket identifier.
+        title: Optional new title.
+        description: Optional new description.
+        resolution_status: Optional new resolution status.
+        base_url: Ticket system base URL (no trailing slash).
+        timeout_s: HTTP timeout in seconds.
+
+    Returns:
+        Parsed JSON (dict) on success. Raises for non-2xx.
+    """
+    if not (title or description or resolution_status):
+        raise ValueError(
+            "Provide at least one of `title`, `description`, or `resolution_status` for PATCH."
+        )
+
+    payload: Dict[str, Any] = {}
+    if title is not None:
+        payload["title"] = title
+    if description is not None:
+        payload["description"] = description
+    if resolution_status is not None:
+        payload["resolution_status"] = resolution_status
+
+    url = f"{base_url.rstrip('/')}/{ticket_id}/"
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await _patch(client, url, payload)
+
+    # allows the retry_if_result condition above to trigger retries on 5xx/429.
+    if _should_retry_on_response(resp):
+        return resp
+
+    if 400 <= resp.status_code < 500:
+        try:
+            detail = resp.json()
+        except Exception:
+            detail = resp.text
+        raise httpx.HTTPStatusError(
+            f"PATCH {url} failed with {resp.status_code}: {detail}",
+            request=resp.request,
+            response=resp,
+        )
+
+    return resp.json()
+
+
+@tool("delete_ticket", args_schema=DeleteTicketInput)
+@_retry_decorator()
+async def delete_ticket(ticket_id: str) -> Dict[str, Any]:
+    """
+    DELETE /tickets/{ticket_id}
+    Returns a small JSON status object.
+    Retries on network errors/timeouts; does not retry on 4xx.
+    """
+    url = f"{str(BASE_URL).rstrip('/')}/{ticket_id}/"
+    timeout = httpx.Timeout(10.0, connect=5.0)
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.delete(url)
+
+    if resp.status_code == 204:
+        # common REST pattern: 204 No Content on success
+        return {"ok": True, "deleted": True, "ticket_id": ticket_id, "status_code": 204}
+
+    # allows the retry_if_result condition above to trigger retries on 5xx/429.
+    if _should_retry_on_response(resp):
+        return resp
+
+    if 400 <= resp.status_code < 500:
+        # other client errors
+        details = {}
+        try:
+            details = resp.json()
+        except Exception:
+            details = {"text": resp.text[:500]}
+        return {
+            "ok": False,
+            "deleted": False,
+            "ticket_id": ticket_id,
+            "error": "Client error",
+            "status_code": resp.status_code,
+            "details": details,
+        }
+
+
 # ======================= Get tool functions ===================================
 
 
 def get_route_tools() -> list:
     """Return the collection of LangChain tools used by the main agent."""
-    return [route]
+    return [router]
 
 
 def get_sub_agent_tools() -> list:
     """Return the collection of LangChain tools used by the support agent."""
     # TODO: Add tools for sub agents
-    return [get_tickets, create_ticket_tool, get_filtered_tickets_tool]
+    return [
+        get_tickets,
+        create_ticket,
+        get_filtered_tickets,
+        update_ticket,
+        delete_ticket,
+    ]
 
 
 def get_tool(tool_name: str) -> BaseTool:

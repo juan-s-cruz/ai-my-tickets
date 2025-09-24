@@ -12,9 +12,7 @@ from typing import Any
 
 from src.config import DEFAULT_PROMPT_SET, AGENTS_CONFIG
 from src.sub_agents import sub_agent
-from src.tool_factory import get_route_tools
 
-from langchain.prompts import ChatPromptTemplate
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -22,9 +20,12 @@ from langchain_core.messages import (
     ToolMessage,
 )
 from langchain_core.runnables.base import Runnable
-from langchain_openai import AzureChatOpenAI
+
 from langgraph.graph import StateGraph, MessagesState, START, END
 from langgraph.prebuilt import ToolNode, tools_condition
+
+from src.tool_factory import get_route_tools
+from src.main_agent import run_chat_model
 
 logger = logging.getLogger(__name__)
 
@@ -32,14 +33,6 @@ RETRY_HINT: bytes = b"retry: 5000\n\n"
 
 # Cache the graph after first use with this global variable
 _GRAPH: Runnable | None = None
-PROMPTS: Mapping[str, str] = AGENTS_CONFIG.get(DEFAULT_PROMPT_SET, {})
-if not PROMPTS:
-    raise RuntimeError(f"Prompt configuration '{DEFAULT_PROMPT_SET}' is not defined")
-
-if "system" not in PROMPTS:
-    raise RuntimeError(
-        f"Prompt configuration '{DEFAULT_PROMPT_SET}' is missing a system prompt"
-    )
 
 
 def after_tools(state: MessagesState) -> str:
@@ -50,9 +43,12 @@ def after_tools(state: MessagesState) -> str:
     last = state["messages"][-1]
     if isinstance(last, ToolMessage) and getattr(last, "name", "") == "route":
         dest = str(last.content).strip().lower()
-        if dest == "get_endpoint_assistant":
-            return dest
-        if dest == "create_endpoint_assistant":
+        if dest in [
+            "get_endpoint_assistant",
+            "create_endpoint_assistant",
+            "update_endpoint_assistant",
+            "delete_endpoint_assistant",
+        ]:
             return dest
     return "end"
 
@@ -63,46 +59,22 @@ def build_chain() -> Runnable:
     Returns:
         Runnable: Compiled LangGraph workflow for invoking the chat model.
     """
-    prompt = ChatPromptTemplate.from_messages(
-        [("system", PROMPTS["system"]), ("human", "{input}")]
-    )
+    main_agent = run_chat_model
 
-    deployment = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT")
-    if not deployment:
-        raise RuntimeError("AZURE_OPENAI_CHAT_DEPLOYMENT is not set")
-
-    routing_tools = get_route_tools()
-    llm = AzureChatOpenAI(
-        azure_deployment=deployment,
-        api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
-        streaming=True,
-        temperature=0.0,
-    ).bind_tools(routing_tools)
-    chain: Runnable = prompt | llm
-
-    graph = StateGraph(MessagesState)
-
-    async def run_chat_model(state: MessagesState) -> MessagesState:
-        messages: list[BaseMessage] = state.get("messages", [])
-        if not messages:
-            raise ValueError("Graph state is missing 'messages'")
-
-        last_message = messages[-1]
-
-        response = await chain.ainvoke({"input": last_message.content})
-        if not isinstance(response, BaseMessage):
-            raise TypeError("LLM must return a message")
-        return {"messages": response}
-
-    tool_node = ToolNode(routing_tools)
+    tool_node = ToolNode(get_route_tools())
 
     get_endpoint_agent = sub_agent("get_endpoint_config")
     create_endpoint_agent = sub_agent("create_endpoint_config")
+    update_endpoint_agent = sub_agent("update_endpoint_config")
+    delete_endpoint_agent = sub_agent("delete_endpoint_config")
 
-    graph.add_node("ticket_assistant", run_chat_model)
+    graph = StateGraph(MessagesState)
+    graph.add_node("ticket_assistant", main_agent)
     graph.add_node("tools", tool_node)
     graph.add_node("get_endpoint_node", get_endpoint_agent)
     graph.add_node("create_endpoint_node", create_endpoint_agent)
+    graph.add_node("update_endpoint_node", update_endpoint_agent)
+    graph.add_node("delete_endpoint_node", delete_endpoint_agent)
 
     # I put the graph together
     graph.add_edge(START, "ticket_assistant")
@@ -119,12 +91,16 @@ def build_chain() -> Runnable:
         {
             "get_endpoint_assistant": "get_endpoint_node",
             "create_endpoint_assistant": "create_endpoint_node",
+            "update_endpoint_assistant": "update_endpoint_node",
+            "delete_endpoint_assistant": "delete_endpoint_node",
         },
     )
 
     # graph.add_edge("get_endpoint_node", "ticket_assistant")
     graph.add_edge("get_endpoint_node", END)
     graph.add_edge("create_endpoint_node", END)
+    graph.add_edge("update_endpoint_node", END)
+    graph.add_edge("delete_endpoint_node", END)
     compiled_graph = graph.compile()
     with open("graph_ascii.txt", "w") as f:
         f.write(compiled_graph.get_graph().draw_ascii())
