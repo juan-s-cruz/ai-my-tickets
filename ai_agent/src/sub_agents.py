@@ -9,14 +9,14 @@ from langchain_core.runnables.base import Runnable
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import MessagesState, StateGraph, END, START
 
-from src.config import PROMPT_CONFIG
+from src.config import AGENTS_CONFIG
 
 __all__ = ["sub_agent"]
 
 
 def sub_agent(system_prompt: str) -> Runnable:
     """Return a compiled LangGraph agent configured for a specific system prompt."""
-    prompt_config = PROMPT_CONFIG.get(system_prompt, {})
+    prompt_config = AGENTS_CONFIG.get(system_prompt, {})
     prompt = prompt_config.get("system")
     if not prompt:
         raise RuntimeError("Unable to resolve system prompt for simple agent")

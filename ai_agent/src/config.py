@@ -6,7 +6,7 @@ from typing import Final, Mapping
 
 DEFAULT_PROMPT_SET: Final[str] = "ticketing_agent"
 
-PROMPT_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
+AGENTS_CONFIG: Final[Mapping[str, Mapping[str, str]]] = {
     "ticketing_agent": {
         "system": (
             """You are the AI support engineer for the ticketing platform. Understand the user's issue and decide what is the correct specialized assistant to call to service the user. Each assistant can be reached via the 'route' tool. 
