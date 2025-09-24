@@ -3,6 +3,17 @@ Exploring AI interactions with a basic ticketing system.
 
 (Project development and documentation assisted by ChatGPT)
 
+## Quick Start
+- Ensure the `.env` files mentioned below exist before launching containers.
+- Start both services with Docker Compose:
+  ```bash
+  docker compose up --build
+  ```
+- Run the CLI in another terminal to talk to the agent once containers are healthy:
+  ```bash
+  python ai_agent/cli.py "List all open tickets"
+  ```
+
 ## 1. Ticketing API
 
 ### Overview
