@@ -1,5 +1,7 @@
 # ai-my-tickets
-Exploring AI interactions with a basic ticketing system.
+Exploring AI interactions with a basic ticketing system. 
+
+(Project development and documentation assisted by ChatGPT)
 
 ## 1. Ticketing API
 
