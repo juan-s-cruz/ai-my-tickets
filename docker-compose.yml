@@ -9,7 +9,9 @@ services:
     volumes:
       - ./ticket_system:/app
     networks:
-      - app-network
+      app-network:
+        aliases:
+          - ticket-system
 
   ai_agent:
     build:
@@ -21,7 +23,7 @@ services:
     env_file:
       - ./ai_agent/.env
     environment:
-      - TICKET_SYSTEM_URL=http://ticket_system:8000
+      - TICKET_SYSTEM_URL=http://ticket-system:8000
     volumes:
       - ./ai_agent:/app
     networks:
