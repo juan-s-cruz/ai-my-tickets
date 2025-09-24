@@ -10,12 +10,13 @@ from langchain_openai import AzureChatOpenAI
 from langgraph.graph import MessagesState, StateGraph, END, START
 
 from src.config import AGENTS_CONFIG
+from src.tool_factory import get_tool
 
 __all__ = ["sub_agent"]
 
 
-def sub_agent(system_prompt: str) -> Runnable:
-    """Return a compiled LangGraph agent configured for a specific system prompt."""
+def sub_agent(system_prompt: str, tool_name: str | None = None) -> Runnable:
+    """Return a compiled LangGraph agent configured for a system prompt and tool."""
     prompt_config = AGENTS_CONFIG.get(system_prompt, {})
     prompt = prompt_config.get("system")
     if not prompt:
@@ -31,6 +32,15 @@ def sub_agent(system_prompt: str) -> Runnable:
         streaming=True,
         temperature=0.0,
     )
+
+    if tool_name:
+        try:
+            tool = get_tool(tool_name)
+        except ValueError as exc:  # pragma: no cover - validation safeguard
+            raise RuntimeError(
+                f"Unable to resolve tool '{tool_name}' for sub agent"
+            ) from exc
+        llm = llm.bind_tools([tool])
 
     async def node(state: MessagesState) -> MessagesState:
         msgs = [SystemMessage(content=prompt), *state["messages"]]
