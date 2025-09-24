@@ -8,9 +8,10 @@ import json
 import os
 import logging
 from collections.abc import AsyncIterator, Mapping
-from typing import Any, Literal
+from typing import Any
 
 from src.prompt_config import DEFAULT_PROMPT_SET, PROMPT_CONFIG
+from src.tool_factory import get_route_tools
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_core.messages import (
@@ -24,7 +25,6 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables.base import Runnable
 from langchain_openai import AzureChatOpenAI
 from langgraph.graph import StateGraph, MessagesState, START, END
-from langchain_core.tools import tool
 from langgraph.prebuilt import ToolNode, tools_condition
 
 logger = logging.getLogger(__name__)
@@ -71,18 +71,6 @@ def simple_agent(system_prompt: str) -> Runnable:
     return g.compile()
 
 
-@tool("route")
-def route(
-    destination: Literal["endpoint_1_assistant", "endpoint_2_assistant"],
-    reason: str = "",
-) -> str:
-    """
-    Hand off to a specialized agent. Set `destination` to one of:
-        "endpoint_1_assistant"
-    """
-    return destination
-
-
 def after_tools(state: MessagesState) -> str:
     """
     If the last ToolMessage was `route`, jump to that agent.
@@ -110,7 +98,7 @@ def build_chain() -> Runnable:
     if not deployment:
         raise RuntimeError("AZURE_OPENAI_CHAT_DEPLOYMENT is not set")
 
-    routing_tools = [route]
+    routing_tools = get_route_tools()
     llm = AzureChatOpenAI(
         azure_deployment=deployment,
         api_version=os.getenv("AZURE_OPENAI_API_VERSION"),
